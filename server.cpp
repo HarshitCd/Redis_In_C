@@ -6,18 +6,10 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/ip.h>
+#include "utils.h"
 
-static void msg(const char *msg)
-{
-    fprintf(stdout, "%s\n", msg);
-}
-
-static void die(const char *msg)
-{
-    int err = errno;
-    fprintf(stderr, "[%d] %s\n", err, msg);
-    abort();
-}
+const size_t k_max_msg = 4096;
+const size_t header_len = 4;
 
 static void do_something(int connfd)
 {
@@ -34,7 +26,57 @@ static void do_something(int connfd)
     write(connfd, wbuf, strlen(wbuf));
 }
 
-int main()
+int32_t one_request(int connfd)
+{
+    char rbuf[header_len + k_max_msg + 1];
+    errno = 0;
+
+    // Getting the header data
+    int32_t err = read_full(connfd, rbuf, header_len);
+    if (err)
+    {
+        if (errno == 0)
+        {
+            msg("EOF");
+        }
+        else
+        {
+            msg("read() err");
+        }
+
+        return err;
+    }
+
+    uint32_t len = 0;
+    memcpy(&len, rbuf, header_len);
+    if (len > k_max_msg)
+    {
+        msg("message too long");
+        return -1;
+    }
+
+    // Getting the request body
+    err = read_full(connfd, &rbuf[header_len], len);
+    if (err)
+    {
+        msg("read() error");
+        return err;
+    }
+    rbuf[header_len + len] = '\0';
+    printf("server says: %s\n", &rbuf[header_len]);
+
+    // Do something
+    const char reply[] = "world";
+    len = (uint32_t)strlen(reply);
+
+    char wbuf[header_len + len];
+    memcpy(wbuf, &len, header_len);
+    memcpy(&wbuf[header_len], reply, len);
+
+    return write_all(connfd, wbuf, header_len + len);
+}
+
+int32_t main()
 {
     // Create a socket and get a file descriptor back
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -79,7 +121,15 @@ int main()
             continue; // error
         }
 
-        do_something(connfd);
+        while (true)
+        {
+            int32_t err = one_request(connfd);
+            if (err)
+            {
+                break;
+            }
+        }
+
         close(connfd);
     }
 

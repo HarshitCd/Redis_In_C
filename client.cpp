@@ -6,32 +6,67 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/ip.h>
+#include "utils.h"
 
-static void die(const char *msg)
+const size_t k_max_msg = 4096;
+const size_t header_len = 4;
+
+static int query(int connfd, const char *content)
 {
-    int err = errno;
-    fprintf(stderr, "[%d] %s\n", err, msg);
-    abort();
-}
+    uint32_t len = (uint32_t)strlen(content);
+    if (len > k_max_msg)
+    {
+        return -1;
+    }
 
-static void msg(const char *msg)
-{
-    fprintf(stdout, "%s\n", msg);
-}
+    char wbuf[header_len + k_max_msg];
+    memcpy(wbuf, &len, 4); // assume little endian
+    memcpy(&wbuf[4], content, len);
 
-static void do_something(int connfd)
-{
-    char wbuf[] = "hello";
-    write(connfd, wbuf, strlen(wbuf));
+    int32_t err = write_all(connfd, wbuf, header_len + len);
+    if (err)
+    {
+        return err;
+    }
 
-    char rbuf[64] = {};
-    ssize_t n = read(connfd, rbuf, sizeof(rbuf) - 1);
-    if (n < 0)
+    char rbuf[header_len + k_max_msg + 1];
+    errno = 0;
+
+    // Getting the header data
+    err = read_full(connfd, rbuf, header_len);
+    if (err)
+    {
+        if (errno == 0)
+        {
+            msg("EOF");
+        }
+        else
+        {
+            msg("read() err");
+        }
+
+        return err;
+    }
+
+    len = 0;
+    memcpy(&len, rbuf, header_len);
+    if (len > k_max_msg)
+    {
+        msg("message too long");
+        return -1;
+    }
+
+    // Getting the request body
+    err = read_full(connfd, &rbuf[header_len], len);
+    if (err)
     {
         msg("read() error");
-        return;
+        return err;
     }
-    printf("server says: %s\n", rbuf);
+    rbuf[header_len + len] = '\0';
+    printf("server says: %s\n", &rbuf[header_len]);
+
+    return 0;
 }
 
 int main()
@@ -48,6 +83,26 @@ int main()
     server_addr.sin_addr.s_addr = ntohl(0);
 
     int rv = connect(connfd, (const sockaddr *)&server_addr, sizeof(server_addr));
-    do_something(connfd);
+
+    int err = query(connfd, "hello1");
+    if (err)
+    {
+        goto L_DONE;
+    }
+
+    err = query(connfd, "hello2");
+    if (err)
+    {
+        goto L_DONE;
+    }
+
+    err = query(connfd, "hello3");
+    if (err)
+    {
+        goto L_DONE;
+    }
+
+L_DONE:
     close(connfd);
+    return 0;
 }
